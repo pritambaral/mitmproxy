@@ -1,6 +1,8 @@
 import os, datetime, urllib, re
 import time, functools, cgi
 import json
+import urlparse
+from urllib import unquote
 from netlib import http
 
 def timestamp():
@@ -146,9 +148,16 @@ class LRUCache:
 
 def parse_proxy_spec(url):
     p = http.parse_url(url)
+    pa = urlparse.urlparse(url)
+    username = unquote(pa.username)
+    if pa.password is None:
+        password = ''
+    else:
+        password = unquote(pa.password)
+    auth = http.assemble_http_basic_auth("Basic", username, password)
     if not p or not p[1]:
         return None
-    return p[:3]
+    return p[:3] + (auth,)
 
 
 def parse_content_type(c):

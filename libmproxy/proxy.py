@@ -226,7 +226,18 @@ class ProxyHandler(tcp.BaseHandler):
                 if self.config.reverse_proxy:
                     scheme, host, port = self.config.reverse_proxy
                 elif self.config.forward_proxy:
-                    scheme, host, port = self.config.forward_proxy
+                    scheme, host, port, auth = self.config.forward_proxy
+                    request.headers["Proxy-Authorization"] = [auth]
+
+                    #When making a request to a proxy (other than CONNECT or OPTIONS),
+                    #a client must send the target uri in absolute-form.
+                    #An example absolute-form request line would be:
+                    #    GET http://www.example.com/foo.html HTTP/1.1
+                    path = request.scheme + "://" + request.host
+                    if request.port is not None:
+                        path += ":" + str(request.port)
+                    oldpath = request.path
+                    request.path = path + request.path
                 else:
                     scheme, host, port = request.scheme, request.host, request.port
 
@@ -261,6 +272,8 @@ class ProxyHandler(tcp.BaseHandler):
                     else:
                         break
 
+                if self.config.forward_proxy:
+                    request.path = oldpath
                 response = flow.Response(
                     request, httpversion, code, msg, headers, content, sc.cert,
                     sc.rfile.first_byte_timestamp
