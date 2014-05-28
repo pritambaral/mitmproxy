@@ -38,8 +38,14 @@ class ProxyConfig:
 
 
 class ServerConnection(tcp.TCPClient):
-    def __init__(self, config, scheme, host, port, sni):
-        tcp.TCPClient.__init__(self, host, port)
+    def __init__(self, config, scheme, host, port, sni, proxyhost=None, proxyport=None, proxyauth=None):
+        if proxyhost is not None and proxyport is not None:
+            tcp.TCPClient.__init__(self, proxyhost, proxyport)
+            self.forward = True
+            self.data = "CONNECT %s:%d HTTP/1.1\r\nProxy-Authorization:%s\r\n\r\n" % (host, port, proxyauth)
+        else:
+            tcp.TCPClient.__init__(self, host, port)
+            self.forward = False
         self.config = config
         self.scheme, self.sni = scheme, sni
         self.requestcount = 0
@@ -48,6 +54,12 @@ class ServerConnection(tcp.TCPClient):
 
     def connect(self):
         tcp.TCPClient.connect(self)
+        if self.forward:
+            self.send(self.data)
+            _, code, _, _, _ = http.read_response(self.rfile, 'CONNECT', 0)
+            self.data = None
+            if code != 200:
+                raise ProxyError(400, "Upstream failed");
         self.tcp_setup_timestamp = time.time()
         if self.scheme == "https":
             clientcert = None
@@ -63,9 +75,12 @@ class ServerConnection(tcp.TCPClient):
 
     def send(self, request):
         self.requestcount += 1
-        d = request._assemble()
-        if not d:
-            raise ProxyError(502, "Cannot transmit an incomplete request.")
+        if isinstance(request, flow.Request):
+            d = request._assemble()
+            if not d:
+                raise ProxyError(502, "Cannot transmit an incomplete request.")
+        else:
+            d = request
         self.wfile.write(d)
         self.wfile.flush()
 
@@ -138,7 +153,7 @@ class ProxyHandler(tcp.BaseHandler):
         self.server_conn = None
         tcp.BaseHandler.__init__(self, connection, client_address, server)
 
-    def get_server_connection(self, cc, scheme, host, port, sni, request=None):
+    def get_server_connection(self, cc, scheme, host, port, sni, request=None, forward=False):
         """
             When SNI is in play, this means we have an SSL-encrypted
             connection, which means that the entire handler is dedicated to a
@@ -170,7 +185,11 @@ class ProxyHandler(tcp.BaseHandler):
             )
         if not self.server_conn:
             try:
-                self.server_conn = ServerConnection(self.config, scheme, host, port, sni)
+                if forward:
+                    _, proxyhost, proxyport, proxyauth = self.config.forward_proxy
+                else:
+                    proxyhost, proxyport, proxyauth = None, None, None
+                self.server_conn = ServerConnection(self.config, scheme, host, port, sni, proxyhost, proxyport, proxyauth)
 
                 # Additional attributes, used if the server_connect hook
                 # needs to change parameters
@@ -334,7 +353,7 @@ class ProxyHandler(tcp.BaseHandler):
         else:
             sans = []
             if not self.config.no_upstream_cert:
-                conn = self.get_server_connection(cc, "https", host, port, sni)
+                conn = self.get_server_connection(cc, "https", host, port, sni, forward = self.config.forward_proxy is not None)
                 sans = conn.cert.altnames
                 if conn.cert.cn:
                     host = conn.cert.cn.decode("utf8").encode("idna")
